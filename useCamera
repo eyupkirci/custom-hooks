@@ -1,0 +1,368 @@
+import { useState, useRef, useEffect } from 'react';
+import { 
+  Platform, 
+  Alert 
+} from 'react-native';
+import { 
+  Camera, 
+  CameraType, 
+  PhotoFile, 
+  VideoFile,
+  useCameraDevices 
+} from 'react-native-vision-camera';
+import { request, PERMISSIONS, RESULTS } from 'react-native-permissions';
+import CameraRoll from "@react-native-community/cameraroll";
+import RNFS from 'react-native-fs';
+
+interface UseCameraOptions {
+  onPhotoTaken?: (path: string) => void;
+  onVideoRecorded?: (path: string) => void;
+  onError?: (error: string) => void;
+}
+
+export const useCamera = (options: UseCameraOptions = {}) => {
+  // State variables
+  const [cameraType, setCameraType] = useState<CameraType>('back');
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [photoPath, setPhotoPath] = useState<string | null>(null);
+  const [cameraPermission, setCameraPermission] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Camera reference
+  const camera = useRef<Camera>(null);
+  
+  // Get available camera devices
+  const devices = useCameraDevices();
+  const device = devices[cameraType];
+
+  // Error handling
+  const handleError = (errorMessage: string) => {
+    setError(errorMessage);
+    options.onError?.(errorMessage);
+    
+    // Show alert for user feedback
+    Alert.alert('Camera Error', errorMessage);
+  };
+
+  // Request camera permissions
+  const requestCameraPermission = async () => {
+    const permission = Platform.select({
+      android: PERMISSIONS.ANDROID.CAMERA,
+      ios: PERMISSIONS.IOS.CAMERA
+    });
+
+    try {
+      const result = await request(permission);
+      const granted = result === RESULTS.GRANTED;
+      setCameraPermission(granted);
+      
+      if (!granted) {
+        Alert.alert(
+          'Camera Permission',
+          'Camera permission is required to use this feature.',
+          [{ text: 'OK' }]
+        );
+      }
+      
+      return granted;
+    } catch (error) {
+      console.error('Camera permission error:', error);
+      handleError('Failed to get camera permissions');
+      return false;
+    }
+  };
+
+  // Save photo to gallery
+  const savePhotoToGallery = async (photoPath: string) => {
+    try {
+      // For iOS, use CameraRoll directly
+      if (Platform.OS === 'ios') {
+        await CameraRoll.save(photoPath, { type: 'photo' });
+      } 
+      // For Android, we need to copy the file first
+      else if (Platform.OS === 'android') {
+        // Generate a unique filename
+        const fileName = `IMG_${Date.now()}.jpg`;
+        const destinationPath = `${RNFS.PicturesDirectoryPath}/${fileName}`;
+
+        // Copy the file to the Pictures directory
+        await RNFS.copyFile(photoPath, destinationPath);
+
+        // Add to gallery
+        await CameraRoll.save(destinationPath, { type: 'photo' });
+
+        // Optional: Remove the temporary file
+        await RNFS.unlink(photoPath);
+      }
+
+      console.log('Photo saved to gallery successfully');
+      Alert.alert('Success', 'Photo saved to gallery');
+      options.onPhotoTaken?.(photoPath);
+    } catch (error) {
+      console.error('Error saving photo to gallery:', error);
+      handleError('Failed to save photo');
+    }
+  };
+
+  // Save video to gallery
+  const saveVideoToGallery = async (videoPath: string) => {
+    try {
+      // For iOS, use CameraRoll directly
+      if (Platform.OS === 'ios') {
+        await CameraRoll.save(videoPath, { type: 'video' });
+      } 
+      // For Android, we need to copy the file first
+      else if (Platform.OS === 'android') {
+        // Generate a unique filename
+        const fileName = `VID_${Date.now()}.mp4`;
+        const destinationPath = `${RNFS.MoviesDirectoryPath}/${fileName}`;
+
+        // Copy the file to the Movies directory
+        await RNFS.copyFile(videoPath, destinationPath);
+
+        // Add to gallery
+        await CameraRoll.save(destinationPath, { type: 'video' });
+
+        // Optional: Remove the temporary file
+        await RNFS.unlink(videoPath);
+      }
+
+      console.log('Video saved to gallery successfully');
+      Alert.alert('Success', 'Video saved to gallery');
+      options.onVideoRecorded?.(videoPath);
+    } catch (error) {
+      console.error('Error saving video to gallery:', error);
+      handleError('Failed to save video');
+    }
+  };
+
+  // Take photo method
+  const takePhoto = async () => {
+    if (!cameraPermission) {
+      await requestCameraPermission();
+      return;
+    }
+
+    try {
+      const photo: PhotoFile = await camera.current?.takePhoto({
+        qualityPrioritization: 'quality',
+        flash: 'off'
+      });
+
+      if (photo) {
+        setPhotoPath(photo.path);
+        
+        // Save photo to gallery
+        await savePhotoToGallery(photo.path);
+      }
+    } catch (error) {
+      console.error('Photo capture error:', error);
+      handleError('Failed to capture photo');
+    }
+  };
+
+  // Start video recording
+  const startRecording = async () => {
+    if (!cameraPermission) {
+      await requestCameraPermission();
+      return;
+    }
+
+    try {
+      await camera.current?.startRecording({
+        onRecordingFinished: async (video: VideoFile) => {
+          // Save video to gallery
+          await saveVideoToGallery(video.path);
+        },
+        onRecordingError: (error) => {
+          console.error('Recording error:', error);
+          handleError('Failed to record video');
+        }
+      });
+      setIsRecording(true);
+    } catch (error) {
+      console.error('Start recording error:', error);
+      handleError('Failed to start recording');
+    }
+  };
+
+  // Stop video recording
+  const stopRecording = async () => {
+    try {
+      await camera.current?.stopRecording();
+      setIsRecording(false);
+    } catch (error) {
+      console.error('Stop recording error:', error);
+      handleError('Failed to stop recording');
+    }
+  };
+
+  // Toggle camera type (front/back)
+  const toggleCameraType = () => {
+    setCameraType(current => current === 'back' ? 'front' : 'back');
+  };
+
+  // Initialize camera permissions on hook use
+  useEffect(() => {
+    requestCameraPermission();
+  }, []);
+
+  // Return hook values and methods
+  return {
+    // Camera state
+    cameraRef: camera,
+    device,
+    cameraType,
+    isRecording,
+    photoPath,
+    cameraPermission,
+    error,
+
+    // Camera methods
+    takePhoto,
+    startRecording,
+    stopRecording,
+    toggleCameraType,
+    requestCameraPermission
+  };
+};
+
+// Example usage component
+export const CameraComponent: React.FC = () => {
+  const { 
+    cameraRef, 
+    device, 
+    cameraType, 
+    cameraPermission, 
+    takePhoto, 
+    startRecording, 
+    stopRecording, 
+    toggleCameraType,
+    isRecording,
+    error
+  } = useCamera({
+    onPhotoTaken: (path) => {
+      console.log('Photo taken:', path);
+    },
+    onVideoRecorded: (path) => {
+      console.log('Video recorded:', path);
+    },
+    onError: (errorMessage) => {
+      console.error('Camera error:', errorMessage);
+    }
+  });
+
+  return (
+    <View style={styles.container}>
+      {error && (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
+      )}
+      
+      {device && cameraPermission ? (
+        <Camera
+          ref={cameraRef}
+          style={styles.camera}
+          device={device}
+          isActive={true}
+          photo={true}
+          video={true}
+          audio={true}
+          type={cameraType}
+        />
+      ) : (
+        <View style={styles.permissionContainer}>
+          <Text style={styles.permissionText}>
+            Camera permission required. Please grant access.
+          </Text>
+        </View>
+      )}
+      
+      <View style={styles.buttonContainer}>
+        <TouchableOpacity 
+          style={styles.button} 
+          onPress={takePhoto}
+          disabled={!cameraPermission}
+        >
+          <Text style={styles.buttonText}>Take Photo</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity 
+          style={styles.button} 
+          onPress={toggleCameraType}
+          disabled={!cameraPermission}
+        >
+          <Text style={styles.buttonText}>Flip Camera</Text>
+        </TouchableOpacity>
+
+        {!isRecording ? (
+          <TouchableOpacity 
+            style={styles.button} 
+            onPress={startRecording}
+            disabled={!cameraPermission}
+          >
+            <Text style={styles.buttonText}>Start Recording</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity 
+            style={[styles.button, styles.recordingButton]} 
+            onPress={stopRecording}
+          >
+            <Text style={styles.buttonText}>Stop Recording</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
+  camera: {
+    width: '100%',
+    height: '80%'
+  },
+  buttonContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    width: '100%',
+    padding: 10
+  },
+  button: {
+    backgroundColor: '#3498db',
+    padding: 10,
+    borderRadius: 5
+  },
+  recordingButton: {
+    backgroundColor: '#e74c3c'
+  },
+  buttonText: {
+    color: 'white',
+    textAlign: 'center'
+  },
+  errorContainer: {
+    backgroundColor: '#ff6b6b',
+    padding: 10,
+    width: '100%',
+    alignItems: 'center'
+  },
+  errorText: {
+    color: 'white',
+    fontWeight: 'bold'
+  },
+  permissionContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20
+  },
+  permissionText: {
+    textAlign: 'center',
+    marginBottom: 15
+  }
+});
